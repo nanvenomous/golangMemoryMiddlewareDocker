@@ -7,23 +7,30 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+
+	"memory/middleware"
 )
 
 var (
 	memoryHog [][]byte
 	mu        sync.Mutex
+	memMW     *middleware.MemoryMiddleware
 )
 
 func main() {
-	http.HandleFunc("/", healthHandler)
-	http.HandleFunc("/allocate", allocateHandler)
-	http.HandleFunc("/status", statusHandler)
+	// Initialize memory middleware with default config (env vars will override)
+	memMW = middleware.NewMemoryMiddleware(nil)
 
-	fmt.Println("Starting server on :8080")
-	fmt.Println("Endpoints:")
-	fmt.Println("  GET  /        - Health check")
-	fmt.Println("  POST /allocate?mb=N - Allocate N MB of memory")
-	fmt.Println("  GET  /status  - Memory status")
+	// Wrap handlers with memory middleware
+	http.HandleFunc("/", memMW.Handler(healthHandler))
+	http.HandleFunc("/allocate", memMW.Handler(allocateHandler))
+	http.HandleFunc("/status", memMW.Handler(statusHandler))
+
+	log.Printf("🚀 Starting server on :8080")
+	log.Printf("📡 Endpoints:")
+	log.Printf("   GET  /        - Health check")
+	log.Printf("   POST /allocate?mb=N - Allocate N MB of memory")
+	log.Printf("   GET  /status  - Memory status")
 
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
@@ -43,8 +50,6 @@ func allocateHandler(w http.ResponseWriter, r *http.Request) {
 	if mbParam == "" {
 		mbParam = "10"
 	}
-
-	// log.Printf("Allocating %s \n", mbParam)
 
 	mb, err := strconv.Atoi(mbParam)
 	if err != nil || mb <= 0 {
@@ -78,9 +83,13 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 	chunks := len(memoryHog)
 	mu.Unlock()
 
-	fmt.Fprintf(w, "Memory Status:\n")
-	fmt.Fprintf(w, "Allocated: %d MB\n", m.Alloc/1024/1024)
+	stats := memMW.GetStats()
+
+	fmt.Fprintf(w, "🖥️  Memory Status:\n")
+	fmt.Fprintf(w, "Allocated: %d MB (%s)\n", stats["current_mb"], stats["status"])
 	fmt.Fprintf(w, "Total Allocated: %d MB\n", m.TotalAlloc/1024/1024)
 	fmt.Fprintf(w, "System Memory: %d MB\n", m.Sys/1024/1024)
 	fmt.Fprintf(w, "Memory Chunks: %d\n", chunks)
+	fmt.Fprintf(w, "Queue Length: %d\n", stats["queue_length"])
+	fmt.Fprintf(w, "Limits: Warning=%dMB, Max=%dMB\n", stats["warning_mb"], stats["limit_mb"])
 }
