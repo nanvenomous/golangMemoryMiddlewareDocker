@@ -12,6 +12,7 @@ import (
 )
 
 var (
+	port      = ":8080"
 	memoryHog [][]byte
 	mu        sync.Mutex
 	memMW     *middleware.MemoryMiddleware
@@ -19,20 +20,25 @@ var (
 
 func main() {
 	// Initialize memory middleware with default config (env vars will override)
+	mux := http.NewServeMux()
+
 	memMW = middleware.NewMemoryMiddleware(nil)
 
-	// Wrap handlers with memory middleware
-	http.HandleFunc("/", memMW.Handler(healthHandler))
-	http.HandleFunc("/allocate", memMW.Handler(allocateHandler))
-	http.HandleFunc("/status", memMW.Handler(statusHandler))
+	// Register handlers without middleware
+	mux.HandleFunc("/", healthHandler)
+	mux.HandleFunc("/allocate", allocateHandler)
+	mux.HandleFunc("/status", statusHandler)
 
-	log.Printf("🚀 Starting server on :8080")
+	log.Printf("🚀 Starting server on " + port)
 	log.Printf("📡 Endpoints:")
 	log.Printf("   GET  /        - Health check")
 	log.Printf("   POST /allocate?mb=N - Allocate N MB of memory")
 	log.Printf("   GET  /status  - Memory status")
 
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	// Wrap entire mux with memory middleware
+	wrappedMux := memMW.Wrap(mux)
+
+	log.Fatal(http.ListenAndServe(port, wrappedMux))
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {

@@ -23,6 +23,7 @@ type MemoryMiddleware struct {
 	config       MemoryConfig
 	requestQueue chan *queuedRequest
 	mu           sync.RWMutex
+	next         http.Handler
 }
 
 type queuedRequest struct {
@@ -88,8 +89,21 @@ func NewMemoryMiddleware(config *MemoryConfig) *MemoryMiddleware {
 	return mm
 }
 
-func (mm *MemoryMiddleware) Handler(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+func (mm *MemoryMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	mm.next.ServeHTTP(w, r)
+}
+
+func (mm *MemoryMiddleware) Handler(next http.Handler) http.Handler {
+	return &MemoryMiddleware{
+		config:       mm.config,
+		requestQueue: mm.requestQueue,
+		mu:           mm.mu,
+		next:         next,
+	}
+}
+
+func (mm *MemoryMiddleware) Wrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
 		currentMB := int64(m.Alloc / 1024 / 1024)
@@ -105,12 +119,14 @@ func (mm *MemoryMiddleware) Handler(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		if currentMB >= mm.config.WarningMB {
-			mm.handleHighMemoryRequest(w, r, next, currentMB)
+			mm.handleHighMemoryRequest(w, r, func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r)
+			}, currentMB)
 			return
 		}
 
-		next(w, r)
-	}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (mm *MemoryMiddleware) handleHighMemoryRequest(w http.ResponseWriter, r *http.Request, next http.HandlerFunc, currentMB int64) {

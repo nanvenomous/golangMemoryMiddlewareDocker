@@ -9,9 +9,9 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - GOMEMLIMIT=350MiB             # Go runtime limit (slightly under Docker limit)
-      - MEMORY_LIMIT_MB=400           # Application-level limit for middleware
-      - MEMORY_WARNING_MB=300         # Warning threshold (75% of limit by default)
+      - GOMEMLIMIT=200MiB             # Go runtime limit (slightly under Docker limit)
+      - MEMORY_LIMIT_MB=256           # Application-level limit for middleware
+      - MEMORY_WARNING_MB=150         # Warning threshold (75% of limit by default)
       - MEMORY_QUEUE_SIZE=100         # Maximum number of queued requests
       - MEMORY_QUEUE_TIMEOUT_SEC=30   # Queue timeout in seconds
       - MEMORY_RETRY_AFTER=10         # Retry-After header value for overloaded responses
