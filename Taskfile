@@ -1,0 +1,6 @@
+
+tasks:
+  docker-build:
+    desc: 'build custom docker image'
+    cmds:
+      - docker build -t arch-golang-bun:latest -f ./scripts/Dockerfile_golang_bun .
