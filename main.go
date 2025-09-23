@@ -31,8 +31,8 @@ func main() {
 	log.Printf("   GET  /        - Health check")
 	log.Printf("   POST /allocate?mb=N - Allocate N MB of memory")
 
-	// Wrap entire mux with memory middleware
-	wrappedMux := middleware.MemoryMiddleware(mux)
+	// Wrap mux with middleware chain: rate limiting -> memory limiting
+	wrappedMux := middleware.RateLimitMiddleware(middleware.MemoryMiddleware(mux))
 
 	log.Fatal(http.ListenAndServe(port, wrappedMux))
 }

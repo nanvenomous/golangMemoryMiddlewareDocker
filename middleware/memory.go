@@ -20,6 +20,8 @@ func setup() error {
 		limitStr = os.Getenv("MEMORY_LIMIT_MB")
 	)
 
+	retryAfter = os.Getenv("MEMORY_RETRY_AFTER")
+
 	if limitStr == "" || retryAfter == "" {
 		return errors.New("Must set environment variables MEMORY_LIMIT_MB, MEMORY_RETRY_AFTER")
 	}
