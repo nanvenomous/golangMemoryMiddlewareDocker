@@ -5,8 +5,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
-
-	"golang.org/x/time/rate"
 )
 
 func TestGetRealIP(t *testing.T) {
@@ -67,29 +65,18 @@ func TestGetRealIP(t *testing.T) {
 }
 
 func TestRateLimitMiddleware(t *testing.T) {
-	// Save original config and restore after test
-	originalConfig := rlConfig
-	defer func() {
-		rlConfig = originalConfig
-	}()
-
-	// Set test configuration
-	rlConfig = RateLimitConfig{
+	config := &RateLimitConfig{
 		RequestsPerMinute: 3,
 		BurstSize:         3,
 	}
-
-	// Clear rate limiters for clean test
-	rateLimitMu.Lock()
-	rateLimiters = make(map[string]*rate.Limiter)
-	rateLimitMu.Unlock()
+	manager := NewRateLimiterManager(config)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
 
-	middleware := RateLimitMiddleware(handler)
+	middleware := NewRateLimitMiddleware(manager)(handler)
 
 	t.Run("allows requests under limit", func(t *testing.T) {
 		for i := 0; i < 3; i++ {
@@ -127,10 +114,13 @@ func TestRateLimitMiddleware(t *testing.T) {
 	})
 
 	t.Run("different IPs have separate limits", func(t *testing.T) {
-		// Clear rate limiters for clean test
-		rateLimitMu.Lock()
-		rateLimiters = make(map[string]*rate.Limiter)
-		rateLimitMu.Unlock()
+		// Create a fresh manager for this test
+		config2 := &RateLimitConfig{
+			RequestsPerMinute: 3,
+			BurstSize:         3,
+		}
+		manager2 := NewRateLimiterManager(config2)
+		middleware2 := NewRateLimitMiddleware(manager2)(handler)
 
 		// IP 1 makes 3 requests (should all succeed)
 		for i := 0; i < 3; i++ {
@@ -138,7 +128,7 @@ func TestRateLimitMiddleware(t *testing.T) {
 			req.RemoteAddr = "192.168.1.101:12345"
 			w := httptest.NewRecorder()
 
-			middleware.ServeHTTP(w, req)
+			middleware2.ServeHTTP(w, req)
 
 			if w.Code != http.StatusOK {
 				t.Errorf("IP1 Request %d: expected status %d, got %d", i+1, http.StatusOK, w.Code)
@@ -151,7 +141,7 @@ func TestRateLimitMiddleware(t *testing.T) {
 			req.RemoteAddr = "192.168.1.102:12345"
 			w := httptest.NewRecorder()
 
-			middleware.ServeHTTP(w, req)
+			middleware2.ServeHTTP(w, req)
 
 			if w.Code != http.StatusOK {
 				t.Errorf("IP2 Request %d: expected status %d, got %d", i+1, http.StatusOK, w.Code)
@@ -163,7 +153,7 @@ func TestRateLimitMiddleware(t *testing.T) {
 		req.RemoteAddr = "192.168.1.101:12345"
 		w := httptest.NewRecorder()
 
-		middleware.ServeHTTP(w, req)
+		middleware2.ServeHTTP(w, req)
 
 		if w.Code != http.StatusTooManyRequests {
 			t.Errorf("IP1 overflow request: expected status %d, got %d", http.StatusTooManyRequests, w.Code)
@@ -185,63 +175,70 @@ func TestRateLimitWithEnvironmentVariables(t *testing.T) {
 	// Test with custom rate limit
 	os.Setenv("RATE_LIMIT_REQUESTS_PER_MINUTE", "5")
 
-	// Re-setup rate limiting with new environment
-	setupRateLimit()
+	config := NewRateLimitConfigFromEnv()
 
-	if rlConfig.RequestsPerMinute != 5 {
-		t.Errorf("Expected RequestsPerMinute to be 5, got %d", rlConfig.RequestsPerMinute)
+	if config.RequestsPerMinute != 5 {
+		t.Errorf("Expected RequestsPerMinute to be 5, got %d", config.RequestsPerMinute)
 	}
 
 	// Test with invalid value (should use default)
 	os.Setenv("RATE_LIMIT_REQUESTS_PER_MINUTE", "invalid")
-	setupRateLimit()
+	config = NewRateLimitConfigFromEnv()
 
-	if rlConfig.RequestsPerMinute != 60 {
-		t.Errorf("Expected RequestsPerMinute to be 60 (default), got %d", rlConfig.RequestsPerMinute)
+	if config.RequestsPerMinute != 60 {
+		t.Errorf("Expected RequestsPerMinute to be 60 (default), got %d", config.RequestsPerMinute)
 	}
 }
 
-func TestGetRateLimiter(t *testing.T) {
-	// Save original config and restore after test
-	originalConfig := rlConfig
-	defer func() {
-		rlConfig = originalConfig
-	}()
+func TestNewRateLimitConfig(t *testing.T) {
+	config := NewRateLimitConfig(120)
 
-	// Set test configuration
-	rlConfig = RateLimitConfig{
+	if config.RequestsPerMinute != 120 {
+		t.Errorf("Expected RequestsPerMinute to be 120, got %d", config.RequestsPerMinute)
+	}
+
+	expectedBurst := 12 // 120 / 10
+	if config.BurstSize != expectedBurst {
+		t.Errorf("Expected BurstSize to be %d, got %d", expectedBurst, config.BurstSize)
+	}
+
+	// Test with small value (burst should be minimum 1)
+	config2 := NewRateLimitConfig(5)
+	if config2.BurstSize != 1 {
+		t.Errorf("Expected BurstSize to be 1 for small rate, got %d", config2.BurstSize)
+	}
+}
+
+func TestRateLimiterManager(t *testing.T) {
+	config := &RateLimitConfig{
 		RequestsPerMinute: 60,
 		BurstSize:         6,
 	}
-
-	// Clear rate limiters for clean test
-	rateLimitMu.Lock()
-	rateLimiters = make(map[string]*rate.Limiter)
-	rateLimitMu.Unlock()
+	manager := NewRateLimiterManager(config)
 
 	testIP := "192.168.1.200"
 
 	// First call should create a new limiter
-	limiter1 := getRateLimiter(testIP)
+	limiter1 := manager.getRateLimiter(testIP)
 	if limiter1 == nil {
 		t.Error("Expected limiter to be created")
 	}
 
 	// Second call should return the same limiter
-	limiter2 := getRateLimiter(testIP)
+	limiter2 := manager.getRateLimiter(testIP)
 	if limiter1 != limiter2 {
 		t.Error("Expected same limiter instance")
 	}
 
 	// Different IP should get different limiter
-	limiter3 := getRateLimiter("192.168.1.201")
+	limiter3 := manager.getRateLimiter("192.168.1.201")
 	if limiter1 == limiter3 {
 		t.Error("Expected different limiter for different IP")
 	}
 
 	// Test that limiter works correctly
 	// Should allow burst size requests immediately
-	for i := 0; i < rlConfig.BurstSize; i++ {
+	for i := 0; i < config.BurstSize; i++ {
 		if !limiter1.Allow() {
 			t.Errorf("Request %d should be allowed (within burst)", i+1)
 		}
@@ -253,23 +250,18 @@ func TestGetRateLimiter(t *testing.T) {
 	}
 }
 
-func BenchmarkGetRateLimiter(b *testing.B) {
-	// Set test configuration
-	rlConfig = RateLimitConfig{
+func BenchmarkRateLimiterManager(b *testing.B) {
+	config := &RateLimitConfig{
 		RequestsPerMinute: 1000,
 		BurstSize:         100,
 	}
-
-	// Clear rate limiters for clean test
-	rateLimitMu.Lock()
-	rateLimiters = make(map[string]*rate.Limiter)
-	rateLimitMu.Unlock()
+	manager := NewRateLimiterManager(config)
 
 	testIP := "192.168.1.100"
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		limiter := getRateLimiter(testIP)
+		limiter := manager.getRateLimiter(testIP)
 		limiter.Allow()
 	}
 }

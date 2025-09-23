@@ -3,53 +3,18 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"strconv"
 	"testing"
-
-	"golang.org/x/time/rate"
 )
 
 func TestMiddlewareChain(t *testing.T) {
-	// Save original environment
-	originalLimitMB := os.Getenv("MEMORY_LIMIT_MB")
-	originalRetryAfter := os.Getenv("MEMORY_RETRY_AFTER")
-	originalRateLimit := os.Getenv("RATE_LIMIT_REQUESTS_PER_MINUTE")
+	// Create configurations directly
+	memoryConfig := NewMemoryConfig(99999, "30") // High memory limit
+	rateLimitConfig := &RateLimitConfig{
+		RequestsPerMinute: 10,
+		BurstSize:         1,
+	}
 
-	defer func() {
-		if originalLimitMB != "" {
-			os.Setenv("MEMORY_LIMIT_MB", originalLimitMB)
-		} else {
-			os.Unsetenv("MEMORY_LIMIT_MB")
-		}
-		if originalRetryAfter != "" {
-			os.Setenv("MEMORY_RETRY_AFTER", originalRetryAfter)
-		} else {
-			os.Unsetenv("MEMORY_RETRY_AFTER")
-		}
-		if originalRateLimit != "" {
-			os.Setenv("RATE_LIMIT_REQUESTS_PER_MINUTE", originalRateLimit)
-		} else {
-			os.Unsetenv("RATE_LIMIT_REQUESTS_PER_MINUTE")
-		}
-
-		// Re-setup with original values
-		setup()
-		setupRateLimit()
-	}()
-
-	// Set up test environment
-	os.Setenv("MEMORY_LIMIT_MB", "99999") // High memory limit
-	os.Setenv("MEMORY_RETRY_AFTER", "30")
-	os.Setenv("RATE_LIMIT_REQUESTS_PER_MINUTE", "10") // Higher limit for test
-
-	setup()
-	setupRateLimit()
-
-	// Clear rate limiters for clean test
-	rateLimitMu.Lock()
-	rateLimiters = make(map[string]*rate.Limiter)
-	rateLimitMu.Unlock()
+	manager := NewRateLimiterManager(rateLimitConfig)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -57,7 +22,7 @@ func TestMiddlewareChain(t *testing.T) {
 	})
 
 	// Create middleware chain: RateLimit -> Memory -> Handler
-	wrappedHandler := RateLimitMiddleware(MemoryMiddleware(handler))
+	wrappedHandler := NewRateLimitMiddleware(manager)(NewMemoryMiddleware(memoryConfig)(handler))
 
 	t.Run("allows requests under both limits", func(t *testing.T) {
 		// With 10 requests per minute, burst size should be 1, so we can make 1 request immediately
@@ -104,15 +69,23 @@ func TestMiddlewareChain(t *testing.T) {
 			limitMem = 1
 		}
 
-		os.Setenv("MEMORY_LIMIT_MB", strconv.FormatInt(limitMem, 10))
-		setup()
+		// Create new configs with low memory limit
+		lowMemoryConfig := NewMemoryConfig(limitMem, "30")
+		rateLimitConfig2 := &RateLimitConfig{
+			RequestsPerMinute: 10,
+			BurstSize:         1,
+		}
+		manager2 := NewRateLimiterManager(rateLimitConfig2)
+
+		// Create new handler chain
+		testHandler := NewRateLimitMiddleware(manager2)(NewMemoryMiddleware(lowMemoryConfig)(handler))
 
 		// Use different IP to avoid rate limit
 		req := httptest.NewRequest("GET", "/", nil)
 		req.RemoteAddr = "192.168.1.51:12345"
 		w := httptest.NewRecorder()
 
-		wrappedHandler.ServeHTTP(w, req)
+		testHandler.ServeHTTP(w, req)
 
 		// Keep reference to prevent GC
 		_ = memoryHog
@@ -178,19 +151,19 @@ func TestMiddlewareOrder(t *testing.T) {
 }
 
 func BenchmarkMiddlewareChain(b *testing.B) {
-	// Set up test environment for optimal performance
-	os.Setenv("MEMORY_LIMIT_MB", "99999")
-	os.Setenv("MEMORY_RETRY_AFTER", "30")
-	os.Setenv("RATE_LIMIT_REQUESTS_PER_MINUTE", "999999")
-
-	setup()
-	setupRateLimit()
+	// Create high-performance configs
+	memoryConfig := NewMemoryConfig(99999, "30")
+	rateLimitConfig := &RateLimitConfig{
+		RequestsPerMinute: 999999,
+		BurstSize:         99999,
+	}
+	manager := NewRateLimiterManager(rateLimitConfig)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	wrappedHandler := RateLimitMiddleware(MemoryMiddleware(handler))
+	wrappedHandler := NewRateLimitMiddleware(manager)(NewMemoryMiddleware(memoryConfig)(handler))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

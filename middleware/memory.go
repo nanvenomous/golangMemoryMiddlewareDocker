@@ -9,31 +9,37 @@ import (
 	"strconv"
 )
 
-var (
-	limitMB    int64
-	retryAfter = os.Getenv("MEMORY_RETRY_AFTER")
-)
+type MemoryConfig struct {
+	LimitMB    int64
+	RetryAfter string
+}
 
-func setup() error {
-	var (
-		err      error
-		limitStr = os.Getenv("MEMORY_LIMIT_MB")
-	)
-
-	retryAfter = os.Getenv("MEMORY_RETRY_AFTER")
+func NewMemoryConfigFromEnv() (*MemoryConfig, error) {
+	limitStr := os.Getenv("MEMORY_LIMIT_MB")
+	retryAfter := os.Getenv("MEMORY_RETRY_AFTER")
 
 	if limitStr == "" || retryAfter == "" {
-		return errors.New("Must set environment variables MEMORY_LIMIT_MB, MEMORY_RETRY_AFTER")
+		return nil, errors.New("Must set environment variables MEMORY_LIMIT_MB, MEMORY_RETRY_AFTER")
 	}
 
-	limitMB, err = strconv.ParseInt(limitStr, 10, 64)
+	limitMB, err := strconv.ParseInt(limitStr, 10, 64)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	log.Println("MEMORY_LIMIT_MB: ", limitStr, ", ", "MEMORY_RETRY_AFTER: ", retryAfter)
+	log.Printf("MEMORY_LIMIT_MB: %s, MEMORY_RETRY_AFTER: %s", limitStr, retryAfter)
 
-	return nil
+	return &MemoryConfig{
+		LimitMB:    limitMB,
+		RetryAfter: retryAfter,
+	}, nil
+}
+
+func NewMemoryConfig(limitMB int64, retryAfter string) *MemoryConfig {
+	return &MemoryConfig{
+		LimitMB:    limitMB,
+		RetryAfter: retryAfter,
+	}
 }
 
 func currentMB() int64 {
@@ -42,22 +48,26 @@ func currentMB() int64 {
 	return int64(m.Alloc / 1024 / 1024)
 }
 
-func MemoryMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		memMB := currentMB()
-		if memMB >= limitMB {
-			log.Printf("🚨 MEMORY CRITICAL: %dMB >= %dMB - Rejecting request", memMB, limitMB)
-			w.Header().Set("Retry-After", retryAfter)
-			http.Error(w, "Server overloaded, please retry", http.StatusServiceUnavailable)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+func NewMemoryMiddleware(config *MemoryConfig) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			memMB := currentMB()
+			if memMB >= config.LimitMB {
+				log.Printf("🚨 MEMORY CRITICAL: %dMB >= %dMB - Rejecting request", memMB, config.LimitMB)
+				w.Header().Set("Retry-After", config.RetryAfter)
+				http.Error(w, "Server overloaded, please retry", http.StatusServiceUnavailable)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
-func init() {
-	err := setup()
+// MemoryMiddleware creates a memory middleware using environment variables (for backward compatibility)
+func MemoryMiddleware(next http.Handler) http.Handler {
+	config, err := NewMemoryConfigFromEnv()
 	if err != nil {
 		log.Fatal(err)
 	}
+	return NewMemoryMiddleware(config)(next)
 }

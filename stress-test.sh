@@ -49,7 +49,7 @@ stress_test() {
             break
         fi
         
-        sleep 1
+        sleep .5
     done
     
     echo "Stress test completed"

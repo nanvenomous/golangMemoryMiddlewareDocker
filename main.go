@@ -26,7 +26,7 @@ func main() {
 	mux.HandleFunc("/allocate", allocateHandler)
 	// mux.HandleFunc("/status", statusHandler)
 
-	log.Printf("🚀 Starting server on " + port)
+	log.Printf("🚀 Starting server on %s", port)
 	log.Printf("📡 Endpoints:")
 	log.Printf("   GET  /        - Health check")
 	log.Printf("   POST /allocate?mb=N - Allocate N MB of memory")
@@ -76,22 +76,3 @@ func allocateHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Allocated %d MB. Total allocated: %d MB\n", mb, m.Alloc/1024/1024)
 	fmt.Fprintf(w, "Allocated %d MB. Total allocated: %d MB\n", mb, m.Alloc/1024/1024)
 }
-
-// func statusHandler(w http.ResponseWriter, r *http.Request) {
-// 	var m runtime.MemStats
-// 	runtime.ReadMemStats(&m)
-
-// 	mu.Lock()
-// 	chunks := len(memoryHog)
-// 	mu.Unlock()
-
-// 	stats := memMW.GetStats()
-
-// 	fmt.Fprintf(w, "🖥️  Memory Status:\n")
-// 	fmt.Fprintf(w, "Allocated: %d MB (%s)\n", stats["current_mb"], stats["status"])
-// 	fmt.Fprintf(w, "Total Allocated: %d MB\n", m.TotalAlloc/1024/1024)
-// 	fmt.Fprintf(w, "System Memory: %d MB\n", m.Sys/1024/1024)
-// 	fmt.Fprintf(w, "Memory Chunks: %d\n", chunks)
-// 	fmt.Fprintf(w, "Queue Length: %d\n", stats["queue_length"])
-// 	fmt.Fprintf(w, "Limits: Warning=%dMB, Max=%dMB\n", stats["warning_mb"], stats["limit_mb"])
-// }

@@ -4,47 +4,19 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strconv"
 	"testing"
 )
 
 func TestMemoryMiddleware(t *testing.T) {
-	// Save original environment
-	originalLimitMB := os.Getenv("MEMORY_LIMIT_MB")
-	originalRetryAfter := os.Getenv("MEMORY_RETRY_AFTER")
-
-	defer func() {
-		if originalLimitMB != "" {
-			os.Setenv("MEMORY_LIMIT_MB", originalLimitMB)
-		} else {
-			os.Unsetenv("MEMORY_LIMIT_MB")
-		}
-		if originalRetryAfter != "" {
-			os.Setenv("MEMORY_RETRY_AFTER", originalRetryAfter)
-		} else {
-			os.Unsetenv("MEMORY_RETRY_AFTER")
-		}
-
-		// Re-setup with original values
-		setup()
-	}()
-
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
 
 	t.Run("allows requests under memory limit", func(t *testing.T) {
-		// Set a very high memory limit for this test
-		os.Setenv("MEMORY_LIMIT_MB", "99999")
-		os.Setenv("MEMORY_RETRY_AFTER", "30")
-
-		err := setup()
-		if err != nil {
-			t.Fatalf("Setup failed: %v", err)
-		}
-
-		middleware := MemoryMiddleware(handler)
+		// Create config with high memory limit
+		config := NewMemoryConfig(99999, "30")
+		middleware := NewMemoryMiddleware(config)(handler)
 
 		req := httptest.NewRequest("GET", "/", nil)
 		w := httptest.NewRecorder()
@@ -75,15 +47,8 @@ func TestMemoryMiddleware(t *testing.T) {
 			limitMem = 1
 		}
 
-		os.Setenv("MEMORY_LIMIT_MB", strconv.FormatInt(limitMem, 10))
-		os.Setenv("MEMORY_RETRY_AFTER", "60")
-
-		err := setup()
-		if err != nil {
-			t.Fatalf("Setup failed: %v", err)
-		}
-
-		middleware := MemoryMiddleware(handler)
+		config := NewMemoryConfig(limitMem, "60")
+		middleware := NewMemoryMiddleware(config)(handler)
 
 		req := httptest.NewRequest("GET", "/", nil)
 		w := httptest.NewRecorder()
@@ -112,7 +77,7 @@ func TestMemoryMiddleware(t *testing.T) {
 	})
 }
 
-func TestSetup(t *testing.T) {
+func TestNewMemoryConfigFromEnv(t *testing.T) {
 	// Save original environment
 	originalLimitMB := os.Getenv("MEMORY_LIMIT_MB")
 	originalRetryAfter := os.Getenv("MEMORY_RETRY_AFTER")
@@ -134,17 +99,17 @@ func TestSetup(t *testing.T) {
 		os.Setenv("MEMORY_LIMIT_MB", "100")
 		os.Setenv("MEMORY_RETRY_AFTER", "30")
 
-		err := setup()
+		config, err := NewMemoryConfigFromEnv()
 		if err != nil {
 			t.Errorf("Expected no error, got %v", err)
 		}
 
-		if limitMB != 100 {
-			t.Errorf("Expected limitMB to be 100, got %d", limitMB)
+		if config.LimitMB != 100 {
+			t.Errorf("Expected LimitMB to be 100, got %d", config.LimitMB)
 		}
 
-		if retryAfter != "30" {
-			t.Errorf("Expected retryAfter to be '30', got '%s'", retryAfter)
+		if config.RetryAfter != "30" {
+			t.Errorf("Expected RetryAfter to be '30', got '%s'", config.RetryAfter)
 		}
 	})
 
@@ -152,7 +117,7 @@ func TestSetup(t *testing.T) {
 		os.Unsetenv("MEMORY_LIMIT_MB")
 		os.Setenv("MEMORY_RETRY_AFTER", "30")
 
-		err := setup()
+		_, err := NewMemoryConfigFromEnv()
 		if err == nil {
 			t.Error("Expected error for missing MEMORY_LIMIT_MB")
 		}
@@ -162,7 +127,7 @@ func TestSetup(t *testing.T) {
 		os.Setenv("MEMORY_LIMIT_MB", "100")
 		os.Unsetenv("MEMORY_RETRY_AFTER")
 
-		err := setup()
+		_, err := NewMemoryConfigFromEnv()
 		if err == nil {
 			t.Error("Expected error for missing MEMORY_RETRY_AFTER")
 		}
@@ -172,11 +137,23 @@ func TestSetup(t *testing.T) {
 		os.Setenv("MEMORY_LIMIT_MB", "invalid")
 		os.Setenv("MEMORY_RETRY_AFTER", "30")
 
-		err := setup()
+		_, err := NewMemoryConfigFromEnv()
 		if err == nil {
 			t.Error("Expected error for invalid MEMORY_LIMIT_MB")
 		}
 	})
+}
+
+func TestNewMemoryConfig(t *testing.T) {
+	config := NewMemoryConfig(200, "45")
+
+	if config.LimitMB != 200 {
+		t.Errorf("Expected LimitMB to be 200, got %d", config.LimitMB)
+	}
+
+	if config.RetryAfter != "45" {
+		t.Errorf("Expected RetryAfter to be '45', got '%s'", config.RetryAfter)
+	}
 }
 
 func TestCurrentMB(t *testing.T) {
@@ -193,16 +170,12 @@ func TestCurrentMB(t *testing.T) {
 }
 
 func BenchmarkMemoryMiddleware(b *testing.B) {
-	// Set environment for benchmark
-	os.Setenv("MEMORY_LIMIT_MB", "99999")
-	os.Setenv("MEMORY_RETRY_AFTER", "30")
-	setup()
-
+	config := NewMemoryConfig(99999, "30")
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := MemoryMiddleware(handler)
+	middleware := NewMemoryMiddleware(config)(handler)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

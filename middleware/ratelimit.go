@@ -17,13 +17,13 @@ type RateLimitConfig struct {
 	BurstSize         int
 }
 
-var (
-	rateLimiters = make(map[string]*rate.Limiter)
-	rateLimitMu  sync.RWMutex
-	rlConfig     RateLimitConfig
-)
+type RateLimiterManager struct {
+	config       RateLimitConfig
+	rateLimiters map[string]*rate.Limiter
+	mu           sync.RWMutex
+}
 
-func setupRateLimit() {
+func NewRateLimitConfigFromEnv() *RateLimitConfig {
 	requestsPerMinuteStr := os.Getenv("RATE_LIMIT_REQUESTS_PER_MINUTE")
 	if requestsPerMinuteStr == "" {
 		requestsPerMinuteStr = "60" // Default to 60 requests per minute
@@ -41,12 +41,29 @@ func setupRateLimit() {
 		burstSize = 1
 	}
 
-	rlConfig = RateLimitConfig{
+	log.Printf("Rate limiting configured: %d requests per minute, burst size: %d", requestsPerMinute, burstSize)
+
+	return &RateLimitConfig{
 		RequestsPerMinute: requestsPerMinute,
 		BurstSize:         burstSize,
 	}
+}
 
-	log.Printf("Rate limiting configured: %d requests per minute, burst size: %d", requestsPerMinute, burstSize)
+func NewRateLimitConfig(requestsPerMinute int) *RateLimitConfig {
+	burstSize := requestsPerMinute / 10
+	burstSize = max(1, burstSize)
+
+	return &RateLimitConfig{
+		RequestsPerMinute: requestsPerMinute,
+		BurstSize:         burstSize,
+	}
+}
+
+func NewRateLimiterManager(config *RateLimitConfig) *RateLimiterManager {
+	manager := &RateLimiterManager{
+		config:       *config,
+		rateLimiters: make(map[string]*rate.Limiter),
+	}
 
 	// Cleanup old rate limiters every 5 minutes
 	go func() {
@@ -54,14 +71,16 @@ func setupRateLimit() {
 		defer ticker.Stop()
 		for {
 			<-ticker.C
-			cleanupOldRateLimiters()
+			manager.cleanupOldRateLimiters()
 		}
 	}()
+
+	return manager
 }
 
-func cleanupOldRateLimiters() {
-	rateLimitMu.Lock()
-	defer rateLimitMu.Unlock()
+func (m *RateLimiterManager) cleanupOldRateLimiters() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	// Remove limiters that haven't been used recently
 	// golang.org/x/time/rate handles token bucket cleanup internally
@@ -69,10 +88,10 @@ func cleanupOldRateLimiters() {
 
 	// For simplicity, we'll clean up limiters that have full tokens
 	// (indicating they haven't been used recently)
-	for ip, limiter := range rateLimiters {
+	for ip, limiter := range m.rateLimiters {
 		// If the limiter has full tokens, it hasn't been used recently
-		if limiter.Tokens() == float64(rlConfig.BurstSize) {
-			delete(rateLimiters, ip)
+		if limiter.Tokens() == float64(m.config.BurstSize) {
+			delete(m.rateLimiters, ip)
 		}
 	}
 }
@@ -101,39 +120,44 @@ func getRealIP(r *http.Request) string {
 	return host
 }
 
-func getRateLimiter(ip string) *rate.Limiter {
-	rateLimitMu.Lock()
-	defer rateLimitMu.Unlock()
+func (m *RateLimiterManager) getRateLimiter(ip string) *rate.Limiter {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	limiter, exists := rateLimiters[ip]
+	limiter, exists := m.rateLimiters[ip]
 	if !exists {
 		// Create new rate limiter: rate per minute converted to rate per second
-		ratePerSecond := rate.Limit(float64(rlConfig.RequestsPerMinute) / 60.0)
-		limiter = rate.NewLimiter(ratePerSecond, rlConfig.BurstSize)
-		rateLimiters[ip] = limiter
+		ratePerSecond := rate.Limit(float64(m.config.RequestsPerMinute) / 60.0)
+		limiter = rate.NewLimiter(ratePerSecond, m.config.BurstSize)
+		m.rateLimiters[ip] = limiter
 	}
 
 	return limiter
 }
 
-func RateLimitMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := getRealIP(r)
-		limiter := getRateLimiter(ip)
+func NewRateLimitMiddleware(manager *RateLimiterManager) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := getRealIP(r)
+			limiter := manager.getRateLimiter(ip)
 
-		if !limiter.Allow() {
-			log.Printf("🚨 RATE LIMIT: IP %s exceeded %d requests per minute", ip, rlConfig.RequestsPerMinute)
-			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(rlConfig.RequestsPerMinute))
-			w.Header().Set("X-RateLimit-Window", "60")
-			w.Header().Set("Retry-After", "60")
-			http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
-			return
-		}
+			if !limiter.Allow() {
+				log.Printf("🚨 RATE LIMIT: IP %s exceeded %d requests per minute", ip, manager.config.RequestsPerMinute)
+				w.Header().Set("X-RateLimit-Limit", strconv.Itoa(manager.config.RequestsPerMinute))
+				w.Header().Set("X-RateLimit-Window", "60")
+				w.Header().Set("Retry-After", "60")
+				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+				return
+			}
 
-		next.ServeHTTP(w, r)
-	})
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
-func init() {
-	setupRateLimit()
+// RateLimitMiddleware creates a rate limit middleware using environment variables (for backward compatibility)
+func RateLimitMiddleware(next http.Handler) http.Handler {
+	config := NewRateLimitConfigFromEnv()
+	manager := NewRateLimiterManager(config)
+	return NewRateLimitMiddleware(manager)(next)
 }
